@@ -583,6 +583,14 @@ class GithubConnection(BaseConnection):
         except MethodNotAllowed as e:
             raise MergeFailure('Merge was not successful due to mergeability'
                                ' conflict, original error is %s' % e)
+
+        # NOTE(jamielennox): This is an unfortunate hack because when you merge
+        # via a github integration the code gets merged but the pull request
+        # doesn't get closed. This will eventually be fixed by github, but
+        # until then as a workaround we just manually close the pull request.
+        if self.integration_id:
+            pull_request.close()
+
         log_rate_limit(self.log, github)
         if not result:
             raise Exception('Pull request was not merged')
