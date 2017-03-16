@@ -18,6 +18,9 @@ git_dir=/var/lib/zuul/git
 ;git_user_name=zuul
 zuul_url=http://zuul.example.com/p
 
+[executor]
+username=zuul
+
 [swift]
 authurl=https://identity.api.example.org/v2.0/
 user=username
