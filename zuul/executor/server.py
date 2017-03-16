@@ -237,6 +237,11 @@ class ExecutorServer(object):
         else:
             self.merge_root = '/var/lib/zuul/executor-git'
 
+        if self.config.has_option('executor', 'username'):
+            self.username = self.config.get('executor', 'username')
+        else:
+            self.username = 'zuul'
+
         if self.config.has_option('merger', 'git_user_email'):
             self.merge_email = self.config.get('merger', 'git_user_email')
         else:
@@ -638,10 +643,10 @@ class AnsibleJob(object):
         # expect v6 to work.  If we can determine how to prefer v6
         hosts = []
         for node in args['nodes']:
-            ip = node.get('public_ipv4')
-            if not ip:
-                ip = node.get('public_ipv6')
-            hosts.append((node['name'], dict(ansible_host=ip)))
+            ip = node.get('public_ipv4') or node.get('public_ipv6')
+            props = {'ansible_host': ip,
+                     'ansible_user': self.executor_server.username}
+            hosts.append((node['name'], props))
         return hosts
 
     def _blockPluginDirs(self, path):
@@ -807,7 +812,7 @@ class AnsibleJob(object):
                 inventory.write(host_name)
                 inventory.write(' ')
                 for k, v in host_vars.items():
-                    inventory.write('%s=%s' % (k, v))
+                    inventory.write(' %s=%s' % (k, v))
                 inventory.write('\n')
                 if 'ansible_host' in host_vars:
                     os.system("ssh-keyscan %s >> %s" % (
