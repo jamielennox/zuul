@@ -502,6 +502,12 @@ class AnsibleJob(object):
         else:
             self.private_key_file = '~/.ssh/id_rsa'
 
+        self.executor_variables_file = None
+
+        if self.executor_server.config.has_option('executor', 'variables'):
+            self.executor_variables_file = self.executor_server.config.get(
+                'executor', 'variables')
+
     def run(self):
         self.running = True
         self.thread = threading.Thread(target=self.execute)
@@ -963,6 +969,9 @@ class AnsibleJob(object):
 
         if success is not None:
             cmd.extend(['-e', 'success=%s' % str(bool(success))])
+
+        if self.executor_variables_file is not None:
+            cmd.extend(['-e@%s' % self.executor_variables_file])
 
         cmd.extend(['-e@%s' % self.jobdir.vars, verbose])
 
