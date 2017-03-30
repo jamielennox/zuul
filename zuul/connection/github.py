@@ -17,10 +17,12 @@ import datetime
 import logging
 import hmac
 import hashlib
+import platform
 
 import iso8601
 import jwt
 import requests
+from six.moves import urllib
 import webob
 import webob.dec
 import voluptuous as v
@@ -30,9 +32,15 @@ from github3.exceptions import MethodNotAllowed
 from zuul.connection import BaseConnection
 from zuul.exceptions import MergeFailure
 from zuul.model import GithubTriggerEvent
+from zuul import version
 
 ACCESS_TOKEN_URL = 'https://api.github.com/installations/%s/access_tokens'
 PREVIEW_JSON_ACCEPT = 'application/vnd.github.machine-man-preview+json'
+
+USER_AGENT = 'zuul/%s %s %s/%s' % (
+    version.version_info.version_string(),
+    requests.utils.default_user_agent(),
+    platform.python_implementation(), platform.python_version())
 
 
 class UTC(datetime.tzinfo):
@@ -49,6 +57,317 @@ class UTC(datetime.tzinfo):
 
 
 utc = UTC()
+
+
+class GithubBaseAuth(object):
+
+    def __init__(self, host=None):
+        self.host = host or 'github.com'
+
+    def get_headers(self, api, project, fallback_auth=False):
+        return {}
+
+    def get_params(self, api, project, fallback_auth=False):
+        return {}
+
+    @property
+    def api_url(self):
+        return "https://%s/api" % self.host
+
+    def event_hook(self, api, event_type, json_body):
+        pass
+
+
+class GithubTokenAuth(GithubBaseAuth):
+
+    def __init__(self, api_token, host=None):
+        super(GithubTokenAuth, self).__init__(host=host)
+        self.api_token = api_token
+
+    def get_headers(self, api, project, fallback_auth=False):
+        return {'Authorization': 'token %s' % self.api_token}
+
+
+class UnexpectedHTTPResponse(Exception):
+
+    def __init__(self, response):
+        self.response = response
+
+    @property
+    def status_code(self):
+        return self.response.status_code
+
+    @property
+    def reason(self):
+        return self.response.reason
+
+
+class GithubIntegrationAuth(GithubBaseAuth):
+
+    log = logging.getLogger("zuul.GithubIntegrationAuth")
+
+    def __init__(self,
+                 integration_id,
+                 integration_key,
+                 fallback_token=None,
+                 host=None):
+        super(GithubIntegrationAuth, self).__init__(host=host)
+
+        self.integration_id = integration_id
+        self.integration_key = integration_key
+
+        # there are some things integrations can't do yet so do them with a
+        # standard token. No one will notice.
+        self.fallback_token = fallback_token
+
+        self._integration_token = None
+        self._integration_token_expiry = None
+
+        self.installation_map = {}
+        self.token_cache = {}
+
+    def event_hook(self, api, event_type, json_body):
+        super(GithubIntegrationAuth, self).event_hook(event_type, json_body)
+
+        # If there's any installation mapping information in the body then
+        # update the project mapping before any requests are made.
+        installation_id = json_body.get('installation', {}).get('id')
+        project_name = json_body.get('repository', {}).get('full_name')
+
+        if installation_id and project_name:
+            old_id = self.installation_map.get(project_name)
+
+            if old_id and old_id != installation_id:
+                msg = "Unexpected installation_id change for %s. %d -> %d."
+                self.log.warning(msg, project_name, old_id, installation_id)
+
+            self.installation_map[project_name] = installation_id
+
+    @property
+    def integration_token(self):
+        now = datetime.datetime.now(utc)
+
+        if ((not self._integration_token) or
+                (not self._integration_token_expiry) or
+                (now >= self._integration_token_expiry)):
+            # 10 minutes is the maximum amount of time you can request
+            expiry = now + datetime.timedelta(minutes=10)
+            data = {'iat': now, 'exp': expiry, 'iss': self.integration_id}
+
+            self.integration_token = jwt.encode(data,
+                                                self.integration_key,
+                                                algorithm='RS256')
+
+            expiry -= datetime.timedelta(minutes=2)
+            self._integration_token_expiry = expiry
+
+        return self._integration_token
+
+    def get_headers(self, api, project, fallback_auth=False):
+        if fallback_auth:
+            return {'Authorization': 'token %s' % self.fallback_token}
+
+        elif project:
+            token = self._get_installation_token(project)
+            return {'Authorization': 'Token %s' % token}
+
+        else:
+            return {'Authorization': 'Bearer %s' % self.integration_token}
+
+    def _get_installation_token(self, api, project, user_id=None):
+        installation_id = self.installation_map.get(project)
+
+        if not installation_id:
+            self.log.error("No installation ID available for project %s",
+                           project)
+            return ''
+
+        now = datetime.datetime.now(utc)
+        token, expiry = self.installation_token_cache.get(installation_id,
+                                                          (None, None))
+
+        if ((not expiry) or (not token) or (now >= expiry)):
+            url = ACCESS_TOKEN_URL % installation_id
+
+            headers = {'Accept': PREVIEW_JSON_ACCEPT,
+                       'Authorization': 'Bearer %s' % self.integration_token}
+            json_data = {'user_id': user_id} if user_id else None
+
+            response = api.session.post(url, headers=headers, json=json_data)
+
+            if response.status_code != 200:
+                raise UnexpectedHTTPResponse(resp)
+
+            data = response.json()
+
+            expiry = iso8601.parse_date(data['expires_at'])
+            expiry -= datetime.timedelta(minutes=2)
+            token = data['token']
+
+            self.installation_token_cache[installation_id] = (token, expiry)
+
+        return token
+
+
+class GithubAPI(object):
+
+    def __init__(self, auth=None):
+        self.session = requests.Session()
+        self.auth = auth or GithubBaseAuth()
+
+    def event_hook(self, *args, **kwargs):
+        return self.auth.event_hook(self, *args, **kwargs)
+
+    def request(self, method, url,
+                project=None,
+                fallback_auth=False,
+                expected_status=200,
+                **kwargs):
+        params = self.auth.get_params(self,
+                                      project,
+                                      fallback_auth=fallback_auth)
+        headers = self.auth.get_headers(self,
+                                        project,
+                                        fallback_auth=fallback_auth)
+
+        headers.setdefault('Accept', 'application/vnd.github.v3+json')
+        headers.setdefault('User-Agent', USER_AGENT)
+
+        if params:
+            kwargs.setdefault('params', {}).update(params)
+        if headers:
+            kwargs.setdefault('headers', {}).update(headers)
+
+        if urllib.parse.urlparse(url).netloc:
+            url = self.auth.api_url + path
+
+        resp = self.session.request(method, url, **kwargs)
+
+        if resp.status_code != expected_status:
+            raise UnexpectedHTTPResponse(resp)
+
+        return resp
+
+    def get(self, path, **kwargs):
+        return self.request('GET', path, **kwargs)
+
+    def get_iter(self, path, **kwargs):
+        while path:
+            resp = self.get(path, **kwargs)
+
+            for item in resp.json():
+                yield item
+
+            path = resp.links.get('next')
+
+    def post(self, path, **kwargs):
+        kwargs.setdefault('expected_status', 201)
+        return self.request('POST', path, **kwargs)
+
+    def put(self, path, **kwargs):
+        return self.request('PUT', path, **kwargs)
+
+    def delete(self, path, **kwargs):
+        kwargs.setdefault('expected_status', 204)
+        return self.request('DELETE', path, **kwargs)
+
+    def getPull(self, project, number):
+        return self.get('/repos/%s/pulls/%s' % (project, number),
+                        project=project).json()
+
+    def labelPull(self, project, pr_number, labels):
+        # labels is a list
+        return self.post('/repos/%s/issues/%s/labels' % (project, number),
+                         data=labels,
+                         project=project).json()
+
+    def unlabelPull(self, project, pr_number, label):
+        self.delete('/repos/%s/issues/%s/labels/%s' % (project, number, label))
+
+    def getPullReviews(self, project, pr_number):
+        headers = {'Accept': 'application/vnd.github.black-cat-preview+json'}
+        return self.get_iter('/repos/%s/pulls/%s/reviews',
+                             project=project,
+                             headers=headers)
+
+    def getPullFileNames(self, project, pr_number):
+        data = self.get_iter('/repos/%s/pulls/%s/files' % (project, pr_number),
+                             project=project)
+
+        return [f['filename'] for f in data]
+
+    def getRepoPermission(self, project, username):
+        url = '/repos/%s/collaborators/%s/permission' % (project, username)
+
+        try:
+            return self.get(url, project=project).json()['permission']
+        except requests.exceptions.NotFound:
+            # no known user, maybe deleted since review?
+            return 'none'
+
+    def commentPull(self, project, pr_number, message):
+        self.post('/repos/%s/issues/%s/comments' % (project, pr_number),
+                  json={'body': message},
+                  project=project)
+
+    def mergePull(self, project, pr_number, commit_message='', sha=None):
+        headers = {'Accept': 'application/vnd.github.polaris-preview+json'}
+
+        data = {}
+
+        if commit_message:
+            data['commit_message'] = commit_message
+        if sha:
+            data['sha'] = sha
+
+        self.put('/repos/%s/pulls/%s/merge' % (project, pr_number),
+                 json=data,
+                 project=project)
+
+    def getCommitStatuses(self, project, sha):
+        return self.get_iter('/repos/%s/commits/%s/statuses' % (project, sha),
+                             project=project)
+
+    def setCommitStatus(self,
+                        project,
+                        sha,
+                        state,
+                        url='',
+                        description='',
+                        context=''):
+        params = {'state': state}
+
+        if url:
+            params['target_url'] = url
+        if description:
+            params['description'] = description
+        if context:
+            params['context'] = context
+
+        self.post('/repos/%s/statuses/%s' % (project, sha),
+                  project=project)
+
+    def getPullBySha(self, project, sha):
+        query = '%s repo:%s type:pr is:open' % (sha, project)
+
+        pulls = {}
+        search_reults = self.get_iter('/search/issues', params={'q': query})
+
+        for issue in search_results.get('items', []):
+            pr = self.getPull(project, issue['id'])
+
+            if pr['head']['sha'] != sha:
+                continue
+
+            pulls[issue['id']] = pr
+
+        if len(pulls) > 1:
+            raise Exception('Multiple pulls found with head sha %s' % sha)
+
+        if len(pulls) == 0:
+            return None
+
+        return pulls.keys()[0]
 
 
 class GithubWebhookListener():
@@ -93,19 +412,7 @@ class GithubWebhookListener():
             self.log.exception(message)
             raise webob.exc.HTTPBadRequest(message)
 
-        # If there's any installation mapping information in the body then
-        # update the project mapping before any requests are made.
-        installation_id = json_body.get('installation', {}).get('id')
-        project_name = json_body.get('repository', {}).get('full_name')
-
-        if installation_id and project_name:
-            old_id = self.connection.installation_map.get(project_name)
-
-            if old_id and old_id != installation_id:
-                msg = "Unexpected installation_id change for %s. %d -> %d."
-                self.log.warning(msg, project_name, old_id, installation_id)
-
-            self.connection.installation_map[project_name] = installation_id
+        self.connection.api.event_hook(event, json_body)
 
         try:
             event = method(json_body)
@@ -207,7 +514,7 @@ class GithubWebhookListener():
         action = body.get('action')
         if action == 'pending':
             return
-        pr_body = self.connection.getPullBySha(body['sha'])
+        pr_body = self.connection.getPullBySha(body['name'], body['sha'])
         if pr_body is None:
             return
 
@@ -219,8 +526,7 @@ class GithubWebhookListener():
     def _issue_to_pull_request(self, body):
         number = body.get('issue').get('number')
         project_name = body.get('repository').get('full_name')
-        owner, project = project_name.split('/')
-        pr_body = self.connection.getPull(owner, project, number)
+        pr_body = self.connection.getPull(project_name, number)
         if pr_body is None:
             self.log.debug('Pull request #%s not found in project %s' %
                            (number, project_name))
@@ -272,12 +578,12 @@ class GithubWebhookListener():
         event.title = pr_body.get('title')
 
         # get the statuses
-        owner, project = event.project_name.split('/')
-        event.statuses = self._get_statuses(owner, project, event.patch_number)
+        event.statuses = self._get_statuses(event.project_name,
+                                            event.patch_number)
 
         return event
 
-    def _get_statuses(self, owner, project, sha):
+    def _get_statuses(self, project, sha):
         # A ref can have more than one status from each context,
         # however the API returns them in order, newest first.
         # So we can keep track of which contexts we've already seen
@@ -287,7 +593,7 @@ class GithubWebhookListener():
         # by user, so that we can require/trigger by user too.
         seen = []
         statuses = []
-        for status in self.connection.getCommitStatuses(owner, project, sha):
+        for status in self.connection.getCommitStatuses(project, sha):
             # creator can be None if the user has been removed.
             creator = status.get('creator')
             if not creator:
@@ -350,14 +656,6 @@ class GithubConnection(BaseConnection):
         self.git_ssh_key = self.connection_config.get('sshkey')
         self.git_host = self.connection_config.get('git_host', 'github.com')
 
-        self._github = None
-
-        self.integration_id = None
-        self.integration_key = None
-
-        self.installation_map = {}
-        self.installation_token_cache = {}
-
     def onLoad(self):
         webhook_listener = GithubWebhookListener(self)
         self.registerHttpHandler(self.payload_path,
@@ -366,15 +664,6 @@ class GithubConnection(BaseConnection):
 
     def onStop(self):
         self.unregisterHttpHandler(self.payload_path)
-
-    def _createGithubClient(self):
-        if self.git_host != 'github.com':
-            url = 'https://%s/' % self.git_host
-            github = github3.GitHubEnterprise(url)
-        else:
-            github = github3.GitHub()
-
-        return github
 
     def _authenticateGithubAPI(self):
         config = self.connection_config
@@ -385,10 +674,10 @@ class GithubConnection(BaseConnection):
         integration_key = None
         integration_key_file = config.get('integration_key')
 
-        self._github = self._createGithubClient()
-
         if api_token:
             self._github.login(token=api_token)
+
+        self.api = GithubAPI(GithubTokenAuth(api_token))
 
         if integration_key_file:
             try:
@@ -411,66 +700,6 @@ class GithubConnection(BaseConnection):
         if integration_key:
             self.integration_key = integration_key
 
-    def _get_installation_key(self, project, user_id=None):
-        installation_id = self.installation_map.get(project)
-
-        if not installation_id:
-            self.log.error("No installation ID available for project %s",
-                           project)
-            return ''
-
-        now = datetime.datetime.now(utc)
-        token, expiry = self.installation_token_cache.get(installation_id,
-                                                          (None, None))
-
-        if ((not expiry) or (not token) or (now >= expiry)):
-            expiry = now + datetime.timedelta(minutes=5)
-
-            data = {'iat': now, 'exp': expiry, 'iss': self.integration_id}
-            integration_token = jwt.encode(data,
-                                           self.integration_key,
-                                           algorithm='RS256')
-
-            url = ACCESS_TOKEN_URL % installation_id
-            headers = {'Accept': PREVIEW_JSON_ACCEPT,
-                       'Authorization': 'Bearer %s' % integration_token}
-            json_data = {'user_id': user_id} if user_id else None
-
-            response = requests.post(url, headers=headers, json=json_data)
-            response.raise_for_status()
-
-            data = response.json()
-
-            expiry = iso8601.parse_date(data['expires_at'])
-            expiry -= datetime.timedelta(minutes=2)
-            token = data['token']
-
-            self.installation_token_cache[installation_id] = (token, expiry)
-
-        return token
-
-    def getGithubClient(self,
-                        project=None,
-                        user_id=None,
-                        use_integration=True):
-        # if you're authenticating for a project and you're an integration then
-        # you need to use the installation specific token. There are some
-        # operations that are not yet supported by integrations so
-        # use_integration lets you use api_key auth.
-        if use_integration and project and self.integration_id:
-            github = self._createGithubClient()
-            github.login(token=self._get_installation_key(project, user_id))
-            return github
-
-        # if we're using api_key authentication then this is already token
-        # authenticated, if not then anonymous is the best we have.
-        return self._github
-
-    def maintainCache(self, relevant):
-        for key, change in self._change_cache.items():
-            if change not in relevant:
-                del self._change_cache[key]
-
     def getGitUrl(self, project):
         if self.git_ssh_key:
             return 'ssh://git@%s/%s.git' % (self.git_host, project)
@@ -492,138 +721,32 @@ class GithubConnection(BaseConnection):
     def getPullUrl(self, project, number):
         return '%s/pull/%s' % (self.getGitwebUrl(project), number)
 
-    def getPull(self, owner, project, number):
-        github = self.getGithubClient("%s/%s" % (owner, project))
-        pr = github.pull_request(owner, project, number).as_dict()
-        log_rate_limit(self.log, github)
-        return pr
+    def __getattr__(self, name):
+        names = ['getPull',
+                 'getPullBySha',
+                 'getPullFileNames',
+                 'getPullReviews',
+                 'getRepoPermission',
+                 'commentPull',
+                 'mergePull',
+                 'getCommitStatuses',
+                 'setCommitStatus',
+                 'labelPull',
+                 'unlabelPull']
 
-    def getPullBySha(self, sha):
-        query = '%s type:pr is:open' % sha
-        pulls = []
-        github = self.getGithubClient()
-        for issue in github.search_issues(query=query):
-            pr_url = issue.issue.pull_request().as_dict().get('url')
-            if not pr_url:
-                continue
-            # the issue provides no good description of the project :\
-            owner, project, _, number = pr_url.split('/')[4:]
-            github = self.getGithubClient("%s/%s" % (owner, project))
-            pr = github.pull_request(owner, project, number)
-            if pr.head.sha != sha:
-                continue
-            if pr.as_dict() in pulls:
-                continue
-            pulls.append(pr.as_dict())
+        if name in names:
+            def f(*args, **kwargs):
+                return getattr(self.api, name)(*args, **kwargs)
 
-        if len(pulls) > 1:
-            raise Exception('Multiple pulls found with head sha %s' % sha)
+            return f
 
-        log_rate_limit(self.log, github)
-        if len(pulls) == 0:
-            return None
-        return pulls.pop()
-
-    def getPullFileNames(self, owner, project, number):
-        github = self.getGithubClient("%s/%s" % (owner, project))
-        filenames = [f.filename for f in
-                     github.pull_request(owner, project, number).files()]
-        log_rate_limit(self.log, github)
-        return filenames
-
-    def getPullReviews(self, owner, project, number):
-        # make a list out of the reviews so that we complete our
-        # API transaction
-        # reviews are not yet supported by integrations, use api_key:
-        # https://platform.github.community/t/api-endpoint-for-pr-reviews/409
-        github = self.getGithubClient("%s/%s" % (owner, project),
-                                      use_integration=False)
-        reviews = [review.as_dict() for review in
-                   github.pull_request(owner, project, number).reviews()]
-        log_rate_limit(self.log, github)
-        return reviews
+        raise AttributeError(name)
 
     def getUser(self, login):
         return GithubUser(self.getGithubClient(), login)
 
     def getUserUri(self, login):
         return 'https://%s/%s' % (self.git_host, login)
-
-    def getRepoPermission(self, owner, project, login):
-        # This gets around a missing API call
-        # need preview header
-        github = self.getGithubClient("%s/%s" % (owner, project))
-        headers = {'Accept': 'application/vnd.github.korra-preview'}
-
-        # Create a repo object
-        repository = github.repository(owner, project)
-        # Build up a URL
-        url = repository._build_url('collaborators', login, 'permission',
-                                    base_url=repository._api)
-        # Get the data
-        perms = repository._get(url, headers=headers)
-
-        log_rate_limit(self.log, github)
-
-        # no known user, maybe deleted since review?
-        if perms.status_code == 404:
-            return 'none'
-
-        # get permissions from the data
-        return perms.json()['permission']
-
-    def commentPull(self, owner, project, pr_number, message):
-        github = self.getGithubClient("%s/%s" % (owner, project))
-        pull_request = github.issue(owner, project, pr_number)
-        pull_request.create_comment(message)
-        log_rate_limit(self.log, github)
-
-    def mergePull(self, owner, project, pr_number, commit_message='',
-                  sha=None):
-        github = self.getGithubClient("%s/%s" % (owner, project))
-        pull_request = github.pull_request(owner, project, pr_number)
-        try:
-            result = pull_request.merge(commit_message=commit_message, sha=sha)
-        except MethodNotAllowed as e:
-            raise MergeFailure('Merge was not successful due to mergeability'
-                               ' conflict, original error is %s' % e)
-        log_rate_limit(self.log, github)
-        if not result:
-            raise Exception('Pull request was not merged')
-
-    def getCommitStatuses(self, owner, project, sha):
-        github = self.getGithubClient("%s/%s" % (owner, project))
-        repository = github.repository(owner, project)
-        commit = repository.commit(sha)
-        # make a list out of the statuses so that we complete our
-        # API transaction
-        statuses = [status.as_dict() for status in commit.statuses()]
-
-        log_rate_limit(self.log, github)
-        return statuses
-
-    def setCommitStatus(self, owner, project, sha, state,
-                        url='', description='', context=''):
-        github = self.getGithubClient("%s/%s" % (owner, project))
-        self.log.debug('Setting commit status: %s', state)
-        repository = github.repository(owner, project)
-        self.log.debug('Calling create_status: sha: %s, state: %s, url: %s,'
-                       ' description: %s, context: %s', sha, state, url,
-                       description, context)
-        repository.create_status(sha, state, url, description, context)
-        log_rate_limit(self.log, github)
-
-    def labelPull(self, owner, project, pr_number, label):
-        github = self.getGithubClient("%s/%s" % (owner, project))
-        pull_request = github.issue(owner, project, pr_number)
-        pull_request.add_labels(label)
-        log_rate_limit(self.log, github)
-
-    def unlabelPull(self, owner, project, pr_number, label):
-        github = self.getGithubClient("%s/%s" % (owner, project))
-        pull_request = github.issue(owner, project, pr_number)
-        pull_request.remove_label(label)
-        log_rate_limit(self.log, github)
 
 
 def log_rate_limit(log, github):

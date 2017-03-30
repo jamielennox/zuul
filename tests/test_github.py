@@ -18,12 +18,18 @@ from testtools.matchers import MatchesRegex
 import time
 from tests.base import ZuulTestCase, random_sha1
 
+from requests_mock.contrib import fixture as requests_mock_fixtures
+
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s %(name)-32s '
                     '%(levelname)-8s %(message)s')
 
 
 class TestGithub(ZuulTestCase):
+
+    def setUp(self):
+        super(TestGithub, self).setUp()
+        self.requests_mock = self.useFixture(requests_mock_fixtures.Fixture())
 
     def setup_config(self, config_file='zuul-github.conf'):
         super(TestGithub, self).setup_config(config_file)

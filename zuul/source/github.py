@@ -102,13 +102,11 @@ class GithubSource(BaseSource):
 
     def getPullFiles(self, project, number):
         """Get filenames of the pull request"""
-        owner, project = project.name.split('/')
-        return self.connection.getPullFileNames(owner, project, number)
+        return self.connection.getPullFileNames(project.name, number)
 
     def getPullReviews(self, project, number):
         """Get reviews of the pull request"""
-        owner, project = project.name.split('/')
-        reviews = self.connection.getPullReviews(owner, project, number)
+        reviews = self.connection.getPullReviews(project.name, number)
         # We are mapping reviews to something that looks gerrit approvals
         # 'APPROVE' and 'REQUEST_CHANGES' are a review type of
         # 'review', where as `COMMENT` is a type of 'comment'.
@@ -142,8 +140,7 @@ class GithubSource(BaseSource):
 
             # Get user's rights
             user_can_write = False
-            permission = self.connection.getRepoPermission(
-                owner, project, user)
+            permission = self.connection.getRepoPermission(project.name, user)
             if permission in ['admin', 'write']:
                 user_can_write = True
 

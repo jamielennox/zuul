@@ -829,7 +829,7 @@ class FakeGithubConnection(zuul.connection.github.GithubConnection):
             data=payload, headers=headers)
         urllib.request.urlopen(req)
 
-    def getPull(self, owner, project, number):
+    def getPull(self, project, number):
         pr = self.pull_requests[number - 1]
         data = {
             'number': number,
@@ -850,19 +850,18 @@ class FakeGithubConnection(zuul.connection.github.GithubConnection):
         }
         return data
 
-    def getPullBySha(self, sha):
+    def getPullBySha(self, project, sha):
         prs = list(set([p for p in self.pull_requests if sha == p.head_sha]))
         if len(prs) > 1:
             raise Exception('Multiple pulls found with head sha: %s' % sha)
         pr = prs[0]
-        owner, project = pr.project.split('/')
-        return self.getPull(owner, project, pr.number)
+        return self.getPull(pr.project, pr.number)
 
-    def getPullFileNames(self, owner, project, number):
+    def getPullFileNames(self, project, number):
         pr = self.pull_requests[number - 1]
         return pr.files
 
-    def getPullReviews(self, owner, project, number):
+    def getPullReviews(self, project, number):
         pr = self.pull_requests[number - 1]
         return pr.reviews
 
@@ -874,10 +873,9 @@ class FakeGithubConnection(zuul.connection.github.GithubConnection):
         }
         return data
 
-    def getRepoPermission(self, owner, project, login):
+    def getRepoPermission(self, project, login):
         for pr in self.pull_requests:
-            pr_owner, pr_project = pr.project.split('/')
-            if (pr_owner == owner and pr_project):
+            if (pr.project == project):
                 if login in pr.writers:
                     return 'write'
                 else:
@@ -889,12 +887,11 @@ class FakeGithubConnection(zuul.connection.github.GithubConnection):
     def real_getGitUrl(self, project):
         return super(FakeGithubConnection, self).getGitUrl(project)
 
-    def commentPull(self, owner, project, pr_number, message):
+    def commentPull(self, project, pr_number, message):
         pull_request = self.pull_requests[pr_number - 1]
         pull_request.addComment(message)
 
-    def mergePull(self, owner, project, pr_number, commit_message='',
-                  sha=None):
+    def mergePull(self, project, pr_number, commit_message='', sha=None):
         pull_request = self.pull_requests[pr_number - 1]
         if self.merge_failure:
             raise Exception('Pull request was not merged')
@@ -905,26 +902,22 @@ class FakeGithubConnection(zuul.connection.github.GithubConnection):
         pull_request.is_merged = True
         pull_request.merge_message = commit_message
 
-    def getCommitStatuses(self, owner, project, sha):
+    def getCommitStatuses(self, project, sha):
         for pr in self.pull_requests:
-            pr_owner, pr_project = pr.project.split('/')
-            if (pr_owner == owner and pr_project == project and
-                pr.head_sha == sha):
+            if (pr.project == project and pr.head_sha == sha):
                 return pr.statuses[sha]
 
-    def setCommitStatus(self, owner, project, sha, state,
+    def setCommitStatus(self, project, sha, state,
                         url='', description='', context=''):
         for pr in self.pull_requests:
-            pr_owner, pr_project = pr.project.split('/')
-            if (pr_owner == owner and pr_project == project and
-                pr.head_sha == sha):
+            if (pr.project == project and pr.head_sha == sha):
                 pr.setStatus(sha, state, url, description, context)
 
-    def labelPull(self, owner, project, pr_number, label):
+    def labelPull(self, project, pr_number, label):
         pull_request = self.pull_requests[pr_number - 1]
         pull_request.addLabel(label)
 
-    def unlabelPull(self, owner, project, pr_number, label):
+    def unlabelPull(self, project, pr_number, label):
         pull_request = self.pull_requests[pr_number - 1]
         pull_request.removeLabel(label)
 

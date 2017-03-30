@@ -66,15 +66,15 @@ class GithubReporter(BaseReporter):
 
     def addPullComment(self, pipeline, item, comment=None):
         message = comment or self._formatItemReport(pipeline, item)
-        owner, project = item.change.project.name.split('/')
-        pr_number = item.change.number
         self.log.debug(
             'Reporting change %s, params %s, message: %s' %
             (item.change, self.reporter_config, message))
-        self.connection.commentPull(owner, project, pr_number, message)
+        self.connection.commentPull(item.change.project.name,
+                                    item.change.number,
+                                    message)
 
     def setPullStatus(self, pipeline, item):
-        owner, project = item.change.project.name.split('/')
+        project = item.change.project.name
         sha = item.change.patchset
         context = pipeline.name
         state = self._github_status_value
@@ -100,10 +100,10 @@ class GithubReporter(BaseReporter):
              description, url))
 
         self.connection.setCommitStatus(
-            owner, project, sha, state, url, description, context)
+            project, sha, state, url, description, context)
 
     def mergePull(self, item):
-        owner, project = item.change.project.name.split('/')
+        project = item.change.project.name
         pr_number = item.change.number
         sha = item.change.patchset
         self.log.debug('Reporting change %s, params %s, merging via API' %
@@ -112,8 +112,7 @@ class GithubReporter(BaseReporter):
 
         for i in [1, 2]:
             try:
-                self.connection.mergePull(owner, project, pr_number, message,
-                                          sha)
+                self.connection.mergePull(project, pr_number, message, sha)
                 item.change.is_merged = True
                 return
             except MergeFailure:
@@ -127,16 +126,15 @@ class GithubReporter(BaseReporter):
             item.change)
 
     def setLabels(self, item):
-        owner, project = item.change.project.name.split('/')
+        project = item.change.project.name
         pr_number = item.change.number
         self.log.debug('Reporting change %s, params %s, labels:\n%s' %
                        (item.change, self.reporter_config, self._labels))
         for label in self._labels:
             if label.startswith('-'):
-                self.connection.unlabelPull(
-                    owner, project, pr_number, label[1:])
+                self.connection.unlabelPull(project, pr_number, label[1:])
             else:
-                self.connection.labelPull(owner, project, pr_number, label)
+                self.connection.labelPull(project, pr_number, [label])
 
     def _formatMergeMessage(self, change):
         message = ''
