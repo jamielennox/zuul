@@ -15,7 +15,7 @@
 import logging
 import time
 
-from zuul.model import PullRequest, Ref
+from zuul.model import NullChange, PullRequest, Ref
 from zuul.source import BaseSource
 
 
@@ -62,7 +62,20 @@ class GithubSource(BaseSource):
 
     def getChange(self, event, project):
         """Get the change representing an event."""
-        if event.change_number:
+        if not project:
+            # NOTE(jamielennox): So it's possible here we've received an event
+            # for a project that is not in our layout file. This works for
+            # gerrit so that anything that has a cross-project dependency on
+            # that project can get updated even if it's not in layout.
+            # For now we can't do any of that yet anyway so if we receive an
+            # event for something not in layout it's probably because we forgot
+            # to put it in layout. We don't log here because this will be
+            # called once per pipeline and there is a 'not project' check after
+            # this that will log for us. What we return here is meaningless, it
+            # will get dropped.
+            return NullChange(project)
+
+        elif event.change_number:
             change = PullRequest(project)
             change.number = event.change_number
             change.refspec = event.refspec
