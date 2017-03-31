@@ -18,6 +18,8 @@ import logging
 import hmac
 import hashlib
 
+import cachecontrol
+from cachecontrol.cache import DictCache
 import iso8601
 import jwt
 import requests
@@ -352,6 +354,13 @@ class GithubConnection(BaseConnection):
 
         self._github = None
 
+        # NOTE(jamielennox): Better here would be to cache to memcache or file
+        # or something external - but zuul already sucks at restarting so in
+        # memory probably doesn't make this much worse.
+        self.cache_adapter = cachecontrol.CacheControlAdapter(
+            DictCache(),
+            cache_etags=True)
+
         self.integration_id = None
         self.integration_key = None
 
@@ -373,6 +382,10 @@ class GithubConnection(BaseConnection):
             github = github3.GitHubEnterprise(url)
         else:
             github = github3.GitHub()
+
+        # anything going through requests to http/s goes through cache
+        github.session.mount('http://', self.cache_adapter)
+        github.session.mount('https://', self.cache_adapter)
 
         return github
 
