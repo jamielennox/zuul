@@ -3,7 +3,7 @@
 
 # Install bin deps
 sudo apt-get update
-sudo apt-get install libjpeg-dev
+sudo apt-get -y install libjpeg-dev
 
 venv_dir=$(mktemp -d)
 trap 'rm -rf $venv_dir' EXIT
