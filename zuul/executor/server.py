@@ -647,6 +647,10 @@ class AnsibleJob(object):
                 nodepool_provider=node.get('provider'),
                 nodepool_region=node.get('region'))
 
+            username = node.get('username')
+            if username:
+                host_vars['ansible_user'] = username
+
             host_keys = []
             for key in node.get('host_keys'):
                 host_keys.append("%s %s" % (ip, key))
