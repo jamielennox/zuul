@@ -458,9 +458,9 @@ class GithubConnection(BaseConnection):
         installation_id = self.installation_map.get(project)
 
         if not installation_id:
-            self.log.error("No installation ID available for project %s",
+            self.log.debug("No installation ID available for project %s",
                            project)
-            return ''
+            return None
 
         now = datetime.datetime.now(utc)
         token, expiry = self.installation_token_cache.get(installation_id,
@@ -501,9 +501,12 @@ class GithubConnection(BaseConnection):
         # operations that are not yet supported by integrations so
         # use_integration lets you use api_key auth.
         if use_integration and project and self.integration_id:
-            github = self._createGithubClient()
-            github.login(token=self._get_installation_key(project, user_id))
-            return github
+            token = self._get_installation_key(project, user_id)
+
+            if token:
+                github = self._createGithubClient()
+                github.login(token=token)
+                return github
 
         # if we're using api_key authentication then this is already token
         # authenticated, if not then anonymous is the best we have.
@@ -516,14 +519,15 @@ class GithubConnection(BaseConnection):
 
     @retry(stop=stop_after_attempt(RETRY_LIMIT))
     def getGitUrl(self, project):
-        if self.git_ssh_key:
-            return 'ssh://git@%s/%s.git' % (self.git_host, project)
-
         if self.integration_id:
             installation_key = self._get_installation_key(project)
-            return 'https://x-access-token:%s@%s/%s' % (installation_key,
-                                                        self.git_host,
-                                                        project)
+            if installation_key:
+                return 'https://x-access-token:%s@%s/%s' % (installation_key,
+                                                            self.git_host,
+                                                            project)
+
+        if self.git_ssh_key:
+            return 'ssh://git@%s/%s.git' % (self.git_host, project)
 
         return 'https://%s/%s' % (self.git_host, project)
 
