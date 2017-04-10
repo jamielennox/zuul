@@ -322,7 +322,9 @@ class GithubWebhookListener():
         if not creator:
             user = "Unknown"
         else:
-            user = creator.get('login')
+            user = creator.get('login', '')
+
+        user = user.replace('anne-bonny', 'bonnyci[bot]')
         context = status.get('context')
         state = status.get('state')
         return (user, context, state)
