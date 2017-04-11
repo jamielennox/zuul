@@ -669,7 +669,10 @@ class AnsibleJob(object):
             # set to True in the clouds.yaml for a cloud if this
             # results in the wrong thing being in interface_ip
             # TODO(jeblair): Move this notice to the docs.
-            ip = node.get('interface_ip')
+            ip = (node.get('public_ipv4') or
+                  node.get('public_ipv6') or
+                  node.get('interface_ip'))
+
             host_vars = dict(
                 ansible_host=ip,
                 nodepool_az=node.get('az'),
