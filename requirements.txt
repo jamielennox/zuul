@@ -20,3 +20,4 @@ cryptography
 iso8601
 jenkins-job-builder>1.6.0,<2.0
 cachecontrol
+tenacity
