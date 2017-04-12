@@ -40,7 +40,7 @@ class LayoutSchema(object):
                          'email': str,
                          'older-than': str,
                          'newer-than': str,
-                         }, extra=True)
+                         }, extra=v.ALLOW_EXTRA)
 
     require = {'approval': toList(approval),
                'open': bool,
