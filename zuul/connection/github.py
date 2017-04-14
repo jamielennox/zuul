@@ -539,9 +539,11 @@ class GithubConnection(BaseConnection):
     @retry(stop=stop_after_attempt(RETRY_LIMIT))
     def getPull(self, owner, project, number):
         github = self.getGithubClient("%s/%s" % (owner, project))
-        pr = github.pull_request(owner, project, number).as_dict()
+        pr = github.pull_request(owner, project, number)
         log_rate_limit(self.log, github)
-        return pr
+        if not pr:
+            return None
+        return pr.as_dict()
 
     @retry(stop=stop_after_attempt(RETRY_LIMIT))
     def getPullBySha(self, sha):
