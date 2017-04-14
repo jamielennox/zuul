@@ -216,6 +216,11 @@ class GithubWebhookListener():
         event = self._pull_request_to_event(pr_body)
         event.account = self._get_sender(body)
         event.type = 'status'
+        # Github API is silly. Webhook blob sets author data in
+        # 'sender', but API call to get status puts it in 'creator'.
+        # Duplicate the data so our code can look in one place
+        body['creator'] = body['sender']
+        event.event_status = "%s:%s:%s" % self._status_as_tuple(body)
         return event
 
     def _issue_to_pull_request(self, body):
@@ -290,18 +295,24 @@ class GithubWebhookListener():
         seen = []
         statuses = []
         for status in self.connection.getCommitStatuses(owner, project, sha):
-            # creator can be None if the user has been removed.
-            creator = status.get('creator')
-            if not creator:
-                continue
-            user = creator.get('login')
-            context = status.get('context')
-            state = status.get('state')
-            if "%s:%s" % (user, context) not in seen:
-                statuses.append("%s:%s:%s" % (user, context, state))
-                seen.append("%s:%s" % (user, context))
+            stuple = self._status_as_tuple(status)
+            if "%s:%s" % (stuple[0], stuple[1]) not in seen:
+                statuses.append("%s:%s:%s" % stuple)
+                seen.append("%s:%s" % (stuple[0], stuple[1]))
 
         return statuses
+
+    def _status_as_tuple(self, status):
+        """Translate a status into a tuple of user, context, state"""
+
+        creator = status.get('creator')
+        if not creator:
+            user = "Unknown"
+        else:
+            user = creator.get('login')
+        context = status.get('context')
+        state = status.get('state')
+        return (user, context, state)
 
     def _get_sender(self, body):
         login = body.get('sender').get('login')

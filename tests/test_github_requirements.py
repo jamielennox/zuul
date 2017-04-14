@@ -74,23 +74,34 @@ class TestGithubRequirements(ZuulTestCase):
 
         # An error status should not cause it to be enqueued
         A.setStatus(A.head_sha, 'error', 'null', 'null', 'check')
-        self.fake_github.emitEvent(A.getCommitStatusEvent('error'))
+        self.fake_github.emitEvent(A.getCommitStatusEvent('check',
+                                                          state='error'))
         self.waitUntilSettled()
         self.assertEqual(len(self.history), 0)
 
         # A success status from unknown user should not cause it to be
         # enqueued
         A.setStatus(A.head_sha, 'success', 'null', 'null', 'check', user='foo')
-        self.fake_github.emitEvent(A.getCommitStatusEvent('error'))
+        self.fake_github.emitEvent(A.getCommitStatusEvent('check',
+                                                          state='success',
+                                                          user='foo'))
         self.waitUntilSettled()
         self.assertEqual(len(self.history), 0)
 
         # A success status from zuul goes in
         A.setStatus(A.head_sha, 'success', 'null', 'null', 'check')
-        self.fake_github.emitEvent(A.getCommitStatusEvent('success'))
+        self.fake_github.emitEvent(A.getCommitStatusEvent('check'))
         self.waitUntilSettled()
         self.assertEqual(len(self.history), 1)
         self.assertEqual(self.history[0].name, 'project2-trigger')
+
+        # An error status for different context should not cause it to be
+        # enqueued
+        A.setStatus(A.head_sha, 'error', 'null', 'null', 'gate')
+        self.fake_github.emitEvent(A.getCommitStatusEvent('gate',
+                                                          state='error'))
+        self.waitUntilSettled()
+        self.assertEqual(len(self.history), 1)
 
 # TODO: Implement reject on status
 
