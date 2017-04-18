@@ -253,6 +253,7 @@ class GithubWebhookListener():
         try:
             request_signature = request.headers['X-Hub-Signature']
         except KeyError:
+            self.log.debug('Recieved webhook without signature. Ignoring.')
             raise webob.exc.HTTPUnauthorized(
                 'Please specify a X-Hub-Signature header with secret.')
 
@@ -263,6 +264,7 @@ class GithubWebhookListener():
         self.log.debug("Payload Signature: {0}".format(str(payload_signature)))
         self.log.debug("Request Signature: {0}".format(str(request_signature)))
         if str(payload_signature) != str(request_signature):
+            self.log.debug('Recieved webhook with bad signature. Ignoring.')
             raise webob.exc.HTTPUnauthorized(
                 'Request signature does not match calculated payload '
                 'signature. Check that secret is correct.')
