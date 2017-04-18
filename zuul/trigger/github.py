@@ -32,9 +32,6 @@ class GithubTrigger(BaseTrigger):
 
         efilters = []
         for trigger in toList(trigger_config):
-            statuses = [s.replace('anne-bonny', 'bonnyci[bot]')
-                        for s in toList(trigger.get('status'))]
-
             f = EventFilter(
                 trigger=self,
                 types=toList(trigger['event']),
@@ -43,7 +40,7 @@ class GithubTrigger(BaseTrigger):
                 comments=toList(trigger.get('comment')),
                 labels=toList(trigger.get('label')),
                 states=toList(trigger.get('state')),
-                event_statuses=statuses
+                event_statuses=toList(trigger.get('status'))
             )
             efilters.append(f)
 
