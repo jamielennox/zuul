@@ -107,6 +107,3 @@ class TestWebapp(ZuulTestCase):
             "http://localhost:%s/custom" % self.port)
         f = urllib.request.urlopen(req)
         self.assertEqual('ok', f.read())
-
-        self.webapp.unregister_path('/custom')
-        self.assertRaises(urllib.error.HTTPError, urllib.request.urlopen, req)
