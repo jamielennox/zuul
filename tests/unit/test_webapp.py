@@ -99,14 +99,14 @@ class TestWebapp(ZuulTestCase):
         self.assertEqual(f.read(), public_pem)
 
     def test_webapp_custom_handler(self):
-        def custom_handler(path, tenant_name, request):
+        def custom_handler(request, path):
             return webob.Response(body='ok')
 
-        self.webapp.register_path('/custom', custom_handler)
+        self.webapp.registerConnectionPath('conn', 'custom', custom_handler)
         req = urllib.request.Request(
-            "http://localhost:%s/custom" % self.port)
+            "http://localhost:%s/connection/conn/custom" % self.port)
         f = urllib.request.urlopen(req)
         self.assertEqual(b'ok', f.read())
 
-        self.webapp.unregister_path('/custom')
+        self.webapp.unregisterConnectionPath('conn', 'custom')
         self.assertRaises(urllib.error.HTTPError, urllib.request.urlopen, req)

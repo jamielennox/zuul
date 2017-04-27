@@ -19,7 +19,10 @@ import logging
 import re
 import threading
 import time
+
 from paste import httpserver
+from routes import middleware as routes_middleware
+import routes
 import webob
 from webob import dec
 
@@ -45,7 +48,6 @@ array of changes, they will not include the queue structure.
 
 class WebApp(threading.Thread):
     log = logging.getLogger("zuul.WebApp")
-    change_path_regexp = '/status/change/(.*)$'
 
     def __init__(self, scheduler, port=8001, cache_expiry=1,
                  listen_address='0.0.0.0'):
@@ -56,15 +58,35 @@ class WebApp(threading.Thread):
         self.cache_expiry = cache_expiry
         self.cache = {}
         self.daemon = True
-        self.routes = {}
+
+        self.mapper = routes.Mapper()
         self._init_default_routes()
-        self.server = httpserver.serve(
-            dec.wsgify(self.app), host=self.listen_address, port=self.port,
-            start_loop=False)
+        self._connection_routes = {}
+
+        app = routes_middleware.RoutesMiddleware(dec.wsgify(self.app),
+                                                 self.mapper,
+                                                 use_method_override=False)
+
+        self.server = httpserver.serve(app,
+                                       host=self.listen_address,
+                                       port=self.port,
+                                       start_loop=False)
 
     def _init_default_routes(self):
-        self.register_path('/(status\.json|status)$', self.status)
-        self.register_path(self.change_path_regexp, self.change)
+        self.register_path('/{tenant_name}/keys/{source_name}/'
+                           '{project_name:.+}.pub', self.get_key)
+
+        self.mapper.redirect('/{tenant_name}/status',
+                             '/{tenant_name}/status.json')
+
+        self.register_path('/{tenant_name}/status.json', self.status)
+        self.register_path('/{tenant_name}/status/change/{change_id:\d+,\d+}',
+                           self.change)
+
+        self.register_path('/connection/{name}/{path:.+}', self.get_connection)
+
+    def register_path(self, path, handler):
+        self.mapper.connect(path, action=handler)
 
     def run(self):
         self.server.serve_forever()
@@ -72,24 +94,14 @@ class WebApp(threading.Thread):
     def stop(self):
         self.server.server_close()
 
-    def register_path(self, path, handler):
-        path_re = re.compile(path)
-        self.routes[path] = (path_re, handler)
-
-    def unregister_path(self, path):
-        if self.routes.get(path):
-            del self.routes[path]
-
-    def _handle_keys(self, request, path):
-        m = re.match('/keys/(.*?)/(.*?).pub', path)
-        if not m:
-            raise webob.exc.HTTPNotFound()
-        source_name = m.group(1)
-        project_name = m.group(2)
+    def get_key(self, request, tenant_name, source_name, project_name):
         source = self.scheduler.connections.getSource(source_name)
+
         if not source:
             raise webob.exc.HTTPNotFound()
+
         project = source.getProject(project_name)
+
         if not project:
             raise webob.exc.HTTPNotFound()
 
@@ -101,26 +113,38 @@ class WebApp(threading.Thread):
                                   charset='utf-8')
         return response.conditional_response_app
 
-    def app(self, request):
-        # Try registered paths without a tenant_name first
-        path = request.path
-        for path_re, handler in self.routes.values():
-            if path_re.match(path):
-                return handler(path, '', request)
+    def registerConnectionPath(self, name, path, handler):
+        path_re = re.compile(path)
+        handlers = self._connection_routes.setdefault(name, {})
+        handlers[path] = (path_re, handler)
 
-        # Now try with a tenant_name stripped
-        tenant_name = request.path.split('/')[1]
-        path = request.path.replace('/' + tenant_name, '')
-        # Handle keys
-        if path.startswith('/keys'):
-            return self._handle_keys(request, path)
-        for path_re, handler in self.routes.values():
+    def unregisterConnectionPath(self, name, path):
+        self._connection_routes.get(name, {}).pop(path, None)
+
+    def get_connection(self, request, name, path):
+        # connection paths are handled manually because there is no unregister
+        # in routes and we may need that on reconfiguration.
+        handlers = self._connection_routes.get(name, {})
+
+        for path_re, handler in handlers.values():
             if path_re.match(path):
-                return handler(path, tenant_name, request)
-        else:
+                return handler(request, path)
+
+        raise webob.exc.HTTPNotFound()
+
+    def app(self, request):
+        if not request.urlvars:
             raise webob.exc.HTTPNotFound()
 
-    def status(self, path, tenant_name, request):
+        match = request.urlvars.copy()
+        action = match.pop('action', None)
+
+        if not action or not callable(action):
+            raise webob.exc.HTTPInternalServerError()
+
+        return action(request=request, **match)
+
+    def status(self, request, tenant_name):
         expiry, data = self._get_tenant_status(tenant_name)
 
         resp = self._create_new_resp(expiry)
@@ -129,10 +153,7 @@ class WebApp(threading.Thread):
         resp.charset = 'utf-8'
         return resp.conditional_response_app
 
-    def change(self, path, tenant_name, request):
-        m = re.match(self.change_path_regexp, path)
-        change_id = m.group(1)
-
+    def change(self, request, tenant_name, change_id):
         expiry, data = self._get_tenant_status(tenant_name)
 
         # parse the status json dump to find just the changes we want
@@ -165,6 +186,9 @@ class WebApp(threading.Thread):
         except:
             self.log.exception("Exception formatting status:")
             raise
+
+        if data is None:
+            raise webob.exc.HTTPNotFound()
 
         # Call time.time() again because formatting above may take
         # longer than the cache timeout.

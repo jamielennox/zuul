@@ -69,11 +69,8 @@ class BaseConnection(object):
         Connection can use builtin HTTP server for listening on incoming event
         requests. The resulting path will be /connection/connection_name/path.
         """
-        self.webapp.register_path(self._connectionPath(path), handler)
+        self.webapp.registerConnectionPath(self.connection_name, path, handler)
 
     def unregisterHttpHandler(self, path):
         """Remove the connection handler for HTTP URI."""
-        self.webapp.unregister_path(self._connectionPath(path))
-
-    def _connectionPath(self, path):
-        return '/connection/%s/%s' % (self.connection_name, path)
+        self.webapp.unregisterConnectionPath(self.connection_name, path)
