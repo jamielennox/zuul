@@ -54,7 +54,6 @@ class WebApp(threading.Thread):
         self.listen_address = listen_address
         self.port = port
         self.cache_expiry = cache_expiry
-        self.cache_time = 0
         self.cache = {}
         self.daemon = True
         self.routes = {}
@@ -72,30 +71,6 @@ class WebApp(threading.Thread):
 
     def stop(self):
         self.server.server_close()
-
-    def _changes_by_func(self, func, tenant_name):
-        """Filter changes by a user provided function.
-
-        In order to support arbitrary collection of subsets of changes
-        we provide a low level filtering mechanism that takes a
-        function which applies to changes. The output of this function
-        is a flattened list of those collected changes.
-        """
-        status = []
-        jsonstruct = json.loads(self.cache[tenant_name])
-        for pipeline in jsonstruct['pipelines']:
-            for change_queue in pipeline['change_queues']:
-                for head in change_queue['heads']:
-                    for change in head:
-                        if func(change):
-                            status.append(copy.deepcopy(change))
-        return json.dumps(status)
-
-    def _status_for_change(self, rev, tenant_name):
-        """Return the statuses for a particular change id X,Y."""
-        def func(change):
-            return change['id'] == rev
-        return self._changes_by_func(func, tenant_name)
 
     def register_path(self, path, handler):
         path_re = re.compile(path)
@@ -122,7 +97,8 @@ class WebApp(threading.Thread):
             project.public_key)
 
         response = webob.Response(body=pem_public_key,
-                                  content_type='text/plain')
+                                  content_type='text/plain',
+                                  charset='utf-8')
         return response.conditional_response_app
 
     def app(self, request):
@@ -145,48 +121,66 @@ class WebApp(threading.Thread):
             raise webob.exc.HTTPNotFound()
 
     def status(self, path, tenant_name, request):
-        def func():
-            return webob.Response(body=self.cache[tenant_name],
-                                  content_type='application/json',
-                                  charset='utf8')
-        return self._response_with_status_cache(func, tenant_name)
+        expiry, data = self._get_tenant_status(tenant_name)
+
+        resp = self._create_new_resp(expiry)
+        resp.body = data
+        resp.content_type = 'application/json'
+        resp.charset = 'utf-8'
+        return resp.conditional_response_app
 
     def change(self, path, tenant_name, request):
-        def func():
-            m = re.match(self.change_path_regexp, path)
-            change_id = m.group(1)
-            status = self._status_for_change(change_id, tenant_name)
-            if status:
-                return webob.Response(body=status,
-                                      content_type='application/json',
-                                      charset='utf8')
-            else:
-                raise webob.exc.HTTPNotFound()
-        return self._response_with_status_cache(func, tenant_name)
+        m = re.match(self.change_path_regexp, path)
+        change_id = m.group(1)
 
-    def _refresh_status_cache(self, tenant_name):
-        if (tenant_name not in self.cache or
-            (time.time() - self.cache_time) > self.cache_expiry):
-            try:
-                self.cache[tenant_name] = self.scheduler.formatStatusJSON(
-                    tenant_name)
-                # Call time.time() again because formatting above may take
-                # longer than the cache timeout.
-                self.cache_time = time.time()
-            except:
-                self.log.exception("Exception formatting status:")
-                raise
+        expiry, data = self._get_tenant_status(tenant_name)
 
-    def _response_with_status_cache(self, func, tenant_name):
-        self._refresh_status_cache(tenant_name)
+        # parse the status json dump to find just the changes we want
+        status = []
+        jsonstruct = json.loads(data)
+        for pipeline in jsonstruct['pipelines']:
+            for change_queue in pipeline['change_queues']:
+                for head in change_queue['heads']:
+                    for change in head:
+                        if change_id == change['id']:
+                            status.append(copy.deepcopy(change))
 
-        response = func()
+        if not status:
+            raise webob.exc.HTTPNotFound()
+
+        resp = self._create_new_resp(expiry)
+        resp.body = json.dumps(status)
+        resp.content_type = 'application/json'
+        resp.charset = 'utf-8'
+        return resp.conditional_response_app
+
+    def _get_tenant_status(self, tenant_name):
+        exp_time, data = self.cache.get(tenant_name, (0, None))
+
+        if data and ((time.time() - exp_time) < self.cache_expiry):
+            return exp_time, data
+
+        try:
+            data = self.scheduler.formatStatusJSON(tenant_name)
+        except:
+            self.log.exception("Exception formatting status:")
+            raise
+
+        # Call time.time() again because formatting above may take
+        # longer than the cache timeout.
+        resp = time.time(), data
+        self.cache[tenant_name] = resp
+        return resp
+
+    def _create_new_resp(self, cache_time=None):
+        response = webob.Response()
 
         response.headers['Access-Control-Allow-Origin'] = '*'
 
-        response.cache_control.public = True
-        response.cache_control.max_age = self.cache_expiry
-        response.last_modified = self.cache_time
-        response.expires = self.cache_time + self.cache_expiry
+        if cache_time:
+            response.cache_control.public = True
+            response.cache_control.max_age = self.cache_expiry
+            response.last_modified = cache_time
+            response.expires = cache_time + self.cache_expiry
 
-        return response.conditional_response_app
+        return response
