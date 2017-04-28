@@ -1,0 +1,25 @@
+version: '2'
+services:
+  zookeeper:
+    image: zookeeper:latest
+  mariadb:
+    image: mariadb:latest
+    volumes:
+      - './docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d'
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: 'yes'
+      # MYSQL_DATABASE: openstack_citest
+      # MYSQL_USER: openstack_citest
+      # MYSQL_PASSWORD: openstack_citest
+  zuul:
+    build: .
+    command: /opt/zuul/tests/docker/wait-for-it.sh mariadb:3306 --timeout=60 -- tox
+    volumes:
+      - '../..:/opt/zuul'
+    working_dir: /opt/zuul
+    depends_on:
+      - mariadb
+      - zookeeper
+    environment:
+      NODEPOOL_ZK_HOST: zookeeper
+      ZUUL_MYSQL_HOST: mariadb
