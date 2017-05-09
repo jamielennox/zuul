@@ -13,7 +13,7 @@
 # under the License.
 
 import re
-from testtools.matchers import MatchesRegex
+from testtools.matchers import MatchesRegex, StartsWith
 import time
 
 from tests.base import ZuulTestCase, simple_layout, random_sha1
@@ -300,9 +300,12 @@ class TestGithubDriver(ZuulTestCase):
         self.assertEqual('tenant-one/reporting', report_status['context'])
         self.assertEqual('success', report_status['state'])
         self.assertEqual(2, len(A.comments))
-        report_url = ('http://logs.example.com/reporting/%s/%s/%s/' %
-                      (A.project, A.number, A.head_sha))
-        self.assertEqual(report_url, report_status['url'])
+
+        # Using StartsWith Z as the buildset ref is a uuid that is not recorded
+        # and cannot be simply grabbed for comparison.
+        report_url = ('http://logs.example.com/reporting/%s/%s/Z' %
+                      (A.project, A.number))
+        self.assertThat(report_status['url'], StartsWith(report_url))
 
     @simple_layout('layouts/merging-github.yaml', driver='github')
     def test_report_pull_merge(self):

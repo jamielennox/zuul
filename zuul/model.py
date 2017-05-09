@@ -1266,6 +1266,9 @@ class BuildSet(object):
                 return project_config.merge_mode
         return MERGER_MERGE_RESOLVE
 
+    def getSafeAttributes(self):
+        return Attributes(ref=self.ref)
+
 
 class QueueItem(object):
     """Represents the position of a Change in a ChangeQueue.
@@ -1540,11 +1543,13 @@ class QueueItem(object):
         # secrets, etc.
         safe_change = self.change.getSafeAttributes()
         safe_pipeline = self.pipeline.getSafeAttributes()
+        safe_buildset = self.current_build_set.getSafeAttributes()
         safe_job = job.getSafeAttributes() if job else {}
         safe_build = build.getSafeAttributes() if build else {}
         try:
             url = url_pattern.format(change=safe_change,
                                      pipeline=safe_pipeline,
+                                     buildset=safe_buildset,
                                      job=safe_job,
                                      build=safe_build)
         except KeyError as e:
