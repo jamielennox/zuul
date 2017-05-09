@@ -303,7 +303,7 @@ class TestGithubDriver(ZuulTestCase):
 
         # Using StartsWith Z as the buildset ref is a uuid that is not recorded
         # and cannot be simply grabbed for comparison.
-        report_url = ('http://logs.example.com/reporting/%s/%s/Z' %
+        report_url = ('http://logs.example.com/tenant-one/reporting/%s/%s/Z' %
                       (A.project, A.number))
         self.assertThat(report_status['url'], StartsWith(report_url))
 

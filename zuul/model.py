@@ -1543,12 +1543,14 @@ class QueueItem(object):
         # secrets, etc.
         safe_change = self.change.getSafeAttributes()
         safe_pipeline = self.pipeline.getSafeAttributes()
+        safe_tenant = self.pipeline.layout.tenant.getSafeAttributes()
         safe_buildset = self.current_build_set.getSafeAttributes()
         safe_job = job.getSafeAttributes() if job else {}
         safe_build = build.getSafeAttributes() if build else {}
         try:
             url = url_pattern.format(change=safe_change,
                                      pipeline=safe_pipeline,
+                                     tenant=safe_tenant,
                                      buildset=safe_buildset,
                                      job=safe_job,
                                      build=safe_build)
@@ -2387,6 +2389,9 @@ class Tenant(object):
     def addUntrustedProject(self, project):
         self.untrusted_projects.append(project)
         self._addProject(project)
+
+    def getSafeAttributes(self):
+        return Attributes(name=self.name)
 
 
 class Abide(object):
