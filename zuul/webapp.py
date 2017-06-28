@@ -126,23 +126,27 @@ class WebApp(threading.Thread):
         return response.conditional_response_app
 
     def app(self, request):
-        # Try registered paths without a tenant_name first
-        path = request.path
-        for path_re, handler in self.routes.values():
-            if path_re.match(path):
-                return handler(path, '', request)
+        try:
+            # Try registered paths without a tenant_name first
+            path = request.path
+            for path_re, handler in self.routes.values():
+                if path_re.match(path):
+                    return handler(path, '', request)
 
-        # Now try with a tenant_name stripped
-        tenant_name = request.path.split('/')[1]
-        path = request.path.replace('/' + tenant_name, '')
-        # Handle keys
-        if path.startswith('/keys'):
-            return self._handle_keys(request, path)
-        for path_re, handler in self.routes.values():
-            if path_re.match(path):
-                return handler(path, tenant_name, request)
-        else:
-            raise webob.exc.HTTPNotFound()
+            # Now try with a tenant_name stripped
+            tenant_name = request.path.split('/')[1]
+            path = request.path.replace('/' + tenant_name, '')
+            # Handle keys
+            if path.startswith('/keys'):
+                return self._handle_keys(request, path)
+            for path_re, handler in self.routes.values():
+                if path_re.match(path):
+                    return handler(path, tenant_name, request)
+            else:
+                raise webob.exc.HTTPNotFound()
+        except Exception:
+            self.log.exception("REQUEST FAILED")
+            raise
 
     def status(self, path, tenant_name, request):
         def func():

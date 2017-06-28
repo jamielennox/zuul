@@ -126,6 +126,14 @@ class Scheduler(zuul.cmd.ZuulApp):
             os.kill(self.gear_server_pid, signal.SIGKILL)
 
     def main(self):
+        try:
+            self._main()
+        except Exception:
+            self.log.exception("ZUUL_FAILURE")
+        finally:
+            print('*******ZUUL THREAD EXITTED')
+
+    def _main(self):
         # See comment at top of file about zuul imports
         import zuul.scheduler
         import zuul.executor.client
@@ -178,7 +186,9 @@ class Scheduler(zuul.cmd.ZuulApp):
             self.sched.reconfigure(self.config)
             self.sched.resume()
         except Exception:
+            print('ZUUL HAS FAILED, PRINTING ERR')
             self.log.exception("Error starting Zuul:")
+            print('ZUUL HAS FAILED, DONE ERR')
             # TODO(jeblair): If we had all threads marked as daemon,
             # we might be able to have a nicer way of exiting here.
             sys.exit(1)
