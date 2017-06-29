@@ -836,6 +836,9 @@ class GithubConnection(BaseConnection):
         if perms.status_code == 404:
             return 'none'
 
+        # catch things like a 403
+        perms.raise_for_status()
+
         # get permissions from the data
         return perms.json()['permission']
 
